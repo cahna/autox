@@ -1,0 +1,306 @@
+#!/bin/bash
+
+# Configuration
+##
+readonly LIGHTNING_0="DP-1"
+readonly LIGHTNING_1="DP-2"
+readonly RETINA_DISPLAY="eDP-1"
+
+# Globals
+##
+readonly ARGS="$@"
+readonly SCRIPTNAME=$(basename $0)
+readonly SCRIPTDIR=$(readlink -m $(dirname $0))
+
+# assert_match() helpers
+##
+readonly integer_type='^[0-9]+$'
+readonly xdisplay_name='[a-zA-Z]+\-[0-9]+'
+
+# CLI-configurable flags
+##
+USE_COLOR='yes'
+VERBOSITY='normal'
+MAIN_DISPLAY=$RETINA_DISPLAY
+
+# Colors and output format
+##
+readonly BOLD=$(tput bold)
+readonly COLORS=$(tput colors)
+readonly NOSTYLE=$(tput sgr0)
+readonly UNDERLINE=$(tput sgr 0 1)
+readonly RED=${BOLD}$(tput setaf 1)
+readonly BLUE=${BOLD}$(tput setaf 4)
+readonly GREEN=${BOLD}$(tput setaf 2)
+readonly WHITE=${BOLD}$(tput setaf 7)
+readonly YELLOW=${BOLD}$(tput setaf 3)
+
+PREFIX_INFO="[ info ] "
+PREFIX_DEBUG="[   ok ] "
+PREFIX_WARN="[ warn ] "
+PREFIX_ERROR="[  err ] "
+PREFIX_NORMAL=""
+SUFFIX=""
+
+get_style_info() {
+  echo -e ${BOLD}${BLUE}
+}
+
+get_style_debug() {
+  echo -e ${BOLD}${GREEN}
+}
+
+get_style_normal() {
+  echo -e ${NOSTYLE}
+}
+
+get_style_warn() {
+  echo -e ${BOLD}${YELLOW}
+}
+
+get_style_error() {
+  echo -e ${BOLD}${RED}
+}
+
+fail() {
+  echo -e "${PREFIX_ERROR}${@}${SUFFIX}" >&2
+  exit 1
+}
+
+debug() {
+  if [[ $VERBOSITY = 'full' ]]; then
+    echo -e "${PREFIX_DEBUG}${@}${SUFFIX}" >&2
+  fi
+}
+
+log() {
+  if [[ $VERBOSITY = 'verbose' ]] || [[ $VERBOSITY = 'full' ]]; then
+    echo -e "${PREFIX_INFO}${@}${SUFFIX}"
+  fi
+}
+
+output() {
+  echo -e "${PREFIX_NORMAL}${@}${SUFFIX}"
+}
+
+usage()
+{
+  echo "Usage: $0 [options] [action]"
+  echo ""
+  echo "Available options:"
+  echo "  -h --help             : Shows this usage message"
+  echo "  -d --display=<name>   : Target the given display (default: ${MAIN_DISPLAY})"
+  echo "  -v --verbose          : Enable verbose output"
+  echo "  -vv --very-verbose    : Enable full logging to stdout"
+}
+
+# Fails if target argument is empty/null or if target argument does not match
+# the given $pattern.
+#
+# usage  : assert_match $pcre_pattern $test_target
+# output : None, if successful. Returns 1 if any target arguments are missing 
+#          or if any target arguments fail to match the given pattern.
+##
+assert_match() {
+  if [[ -z $1 ]]; then
+    debug "missing pattern to ${FUNCNAME}()"
+    return 1
+  elif [[ -z $2 ]]; then
+    debug "missing target variable to ${FUNCNAME}()"
+    return 1
+  fi
+
+  local pcre_pattern=$1
+  local test_target=$2
+
+  if ! [[ $test_target =~ $pcre_pattern ]]; then
+    debug "invalid argument type"
+    return 1
+  fi
+}
+
+# Gets the modeline from gtf for the given $x $y $refresh args
+#
+# param  : $x int device pixel width
+# param  : $y int device pixel height
+# param  : $refresh int device refresh rate
+# output : A single line corresponding to the `xrandr --newmode`
+##
+get_modeline() {
+  local width=$1
+  local height=$2
+  local refresh=$3
+
+  local _1=$(assert_match $integer_type $width);   if [[ $? != 0 ]]; then fail "$FUNCNAME() invalid $width"; fi
+  local _2=$(assert_match $integer_type $height);  if [[ $? != 0 ]]; then fail "$FUNCNAME() invalid $height"; fi
+  local _3=$(assert_match $integer_type $refresh); if [[ $? != 0 ]]; then fail "$FUNCNAME() invalid $refresh"; fi
+
+  gtf $width $height $refresh | grep -oP "Modeline .*$" | sed s/^Modeline\ //
+}
+
+# Shows available video output devices and their connection statuses.
+##
+list_displays() {
+  xrandr | grep -P "^${xdisplay_name} [a-zA-Z]+" | cut -d' ' -f1-2 | column -t
+}
+
+# Lists the names of connected displays
+##
+connected_displays() {
+  list_displays | grep -iv disconnected | cut -d' ' -f1
+}
+
+# Succeeds if device name is connected to an output device.
+#
+# param : string device name
+# pass  : when the device name exists and is recognized as being connected
+# fail  : when the device name does not exist or when it is not recognized as
+#         being connected.
+##
+is_connected() {
+  local display=$1
+  local _1=$(assert_match $xdisplay_name $display); if [[ $? != 0 ]]; then fail "${FUNCNAME}() missing \$display"; fi
+  connected_displays | grep -P "${display}"
+  debug "CONNECTED DISPLAYS: $(connected_displays)"
+  [[ $? != 0 ]] && fail "device not connected: $display"
+  return 0
+}
+
+# Sets the screen resolution for the given $display
+#
+# param : $display string
+# param : $x int screen pixel width
+# param : $y int screen pixel height
+##
+set_resolution() {
+  local display=$1
+  local width=$2
+  local height=$3
+
+  local requested_mode=$(get_modeline $width $height 60 2>/dev/null)
+  [[ $? != 0 ]] || [[ -z $requested_mode ]] && fail "failed to find a corresponding modeline"
+
+  log "REQUESTED MODE: $requested_mode"
+
+  local mode_name=$(echo "$requested_mode" | cut -d' ' -f1)
+  if [[ $? != 0 ]] || [[ -z $mode_name ]]; then
+    fail "failed to extract a valid mode_name from the requested modeline"
+  fi
+
+  output "creating new mode..."
+  local newmode_output=$(xrandr --newmode $requested_mode 2>/dev/null)
+  if [[ $? != 0 ]]; then
+    fail "count not create a new modeline for ${display}@${width}x${height}"
+  fi
+
+  output "adding mode: $mode_name"
+  local addmode_output=$(xrandr --addmode $display $mode_name 2>/dev/null)
+  if [[ $? != 0 ]]; then 
+    fail "unable to add modeline to ${display}@${width}x${height}"
+  fi
+
+  # TODO: sleep after setting new resolution. if sleep isn't killed with 
+  #       Ctrl-C, then revert resolution to the previous state or to a 
+  #       known safe state.
+  log "setting resolution..."
+  log "$(xrandr --output $display --mode $mode_name 2>/dev/null)"
+  local set_resolution_output=$(xrandr --output $display --mode $mode_name 2>/dev/null)
+  if [[ $? != 0 ]]; then
+    fail "unable to add modeline to ${display}@${width}x${height}"
+  fi
+
+  debug "resolution is set."
+  return 0
+}
+
+# Marks script settings and configurable parameters as readonly
+##
+lock_settings() {
+  declare -r VERBOSITY
+  declare -r MAIN_DISPLAY
+  declare -r USE_COLOR
+}
+
+configure_terminal() {
+  if [[ $USE_COLOR = 'no' ]]; then
+    return 0 
+  elif [[ $COLORS -gt 7 ]]; then
+    PREFIX_INFO=$(get_style_info)${PREFIX_INFO}
+    PREFIX_DEBUG="$(get_style_debug)${PREFIX_DEBUG}"
+    PREFIX_WARN="$(get_style_warn)${PREFIX_WARN}"
+    PREFIX_ERROR="$(get_style_error)${PREFIX_ERROR}"
+    PREFIX_NORMAL="$(get_style_normal)"
+    SUFFIX="${NOSTYLE}"
+  fi
+
+  declare -r PREFIX_INFO
+  declare -r PREFIX_DEBUG
+  declare -r PREFIX_WARN
+  declare -r PREFIX_ERROR
+  declare -r PREFIX_NORMAL
+  declare -r SUFFIX
+}
+
+# Parses command line arguments, delegates appropriate actions, and sets flags.
+##
+parse_args() {
+  while [ "$1" != "" ]; do
+    PARAM=$(echo $1 | awk -F= '{print $1}')
+    VALUE=$(echo $1 | awk -F= '{print $2}')
+    case $PARAM in
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      -d | --display)
+        MAIN_DISPLAY=$VALUE
+        shift
+        ;;
+      -v | --verbose)
+        VERBOSITY='verbose'
+        ;;
+      -vv | --very-verbose)
+        VERBOSITY='full'
+        ;;
+      *)
+        fail "ERROR: unknown parameter \"$PARAM\"" >&2
+        ;;
+    esac
+    shift
+  done
+
+  lock_settings
+}
+
+# Entry point
+##
+main() {
+  parse_args $ARGS
+  configure_terminal
+
+  if [[ $# < 1 ]]; then
+    # Require at-least one argument
+    fail "usage: $0 [-hv]"
+  fi
+
+  debug "Starting autox..."
+
+  local display=$(is_connected "$MAIN_DISPLAY")
+  local main_connected=$?
+
+  if [[ $main_connected = 0 ]]; then
+    debug "attempting to set_resolution"
+    set_resolution $display 1920 1200
+    local success=$?
+
+    if [[ $success = 0 ]]; then
+      debug "Finished autox."
+      exit 0
+    else
+      fail "nope..."
+    fi
+  fi
+}
+
+main $ARGS
+
