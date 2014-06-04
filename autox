@@ -17,11 +17,15 @@ readonly SCRIPTDIR=$(readlink -m $(dirname $0))
 readonly integer_type='^[0-9]+$'
 readonly xdisplay_name='[a-zA-Z]+\-[0-9]+'
 
-# CLI-configurable flags
+# CLI-configurable variables
 ##
 USE_COLOR='yes'
 VERBOSITY='normal'
 MAIN_DISPLAY=$RETINA_DISPLAY
+
+# CLI-configurable actions
+##
+DO_AUTO_CONFIGURE='no'
 
 # Colors and output format
 ##
@@ -75,7 +79,7 @@ debug() {
 
 log() {
   if [[ $VERBOSITY = 'verbose' ]] || [[ $VERBOSITY = 'full' ]]; then
-    echo -e "${PREFIX_INFO}${@}${SUFFIX}"
+    echo -e "${PREFIX_INFO}${@}${SUFFIX}" >&2
   fi
 }
 
@@ -89,6 +93,7 @@ usage()
   echo ""
   echo "Available options:"
   echo "  -h --help             : Shows this usage message"
+  echo "  -a --auto             : Automatically set resolutions for given displays"
   echo "  -d --display=<name>   : Target the given display (default: ${MAIN_DISPLAY})"
   echo "  -v --verbose          : Enable verbose output"
   echo "  -vv --very-verbose    : Enable full logging to stdout"
@@ -213,12 +218,23 @@ set_resolution() {
   return 0
 }
 
-# Marks script settings and configurable parameters as readonly
-##
 lock_settings() {
+  # Script vars
   declare -r VERBOSITY
   declare -r MAIN_DISPLAY
   declare -r USE_COLOR
+
+  # Actions
+  declare -r DO_AUTO_CONFIGURE
+}
+
+lock_terminal_configuration() {
+  declare -r PREFIX_INFO
+  declare -r PREFIX_DEBUG
+  declare -r PREFIX_WARN
+  declare -r PREFIX_ERROR
+  declare -r PREFIX_NORMAL
+  declare -r SUFFIX
 }
 
 configure_terminal() {
@@ -233,12 +249,7 @@ configure_terminal() {
     SUFFIX="${NOSTYLE}"
   fi
 
-  declare -r PREFIX_INFO
-  declare -r PREFIX_DEBUG
-  declare -r PREFIX_WARN
-  declare -r PREFIX_ERROR
-  declare -r PREFIX_NORMAL
-  declare -r SUFFIX
+  lock_terminal_configuration
 }
 
 # Parses command line arguments, delegates appropriate actions, and sets flags.
@@ -251,6 +262,9 @@ parse_args() {
       -h | --help)
         usage
         exit 0
+        ;;
+      -a | --auto)
+        DO_AUTO_CONFIGURE='yes'
         ;;
       -d | --display)
         MAIN_DISPLAY=$VALUE
@@ -280,7 +294,8 @@ main() {
 
   if [[ $# < 1 ]]; then
     # Require at-least one argument
-    fail "usage: $0 [-hv]"
+    usage
+    exit 1
   fi
 
   debug "Starting autox..."

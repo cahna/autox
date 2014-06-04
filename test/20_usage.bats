@@ -1,8 +1,8 @@
 
-@test "No arguments given causes exit with error" {
+@test "No arguments given  : Displays help and exits with error status" {
   run ./autox
   [[ $status != 0 ]]
-  [[ $output =~ "usage" ]]
+  [[ $output =~ "Usage" ]]
 }
 
 @test "-h --help           : Displays usage" {
@@ -16,19 +16,19 @@
 }
 
 @test "-v --verbose        : Enables verbose output" {
-  run ./autox
-  local control_status="$status"
-  local control_output="$output"
-
-  [[ $control_status != 0 ]]
-  [[ $(echo "$control_output" | wc -l) > 0 ]]
-
   run ./autox -v
-  local test_status="$status"
-  local test_output="$output"
+  local original_output="$output"
+  [[ $status = 0 ]]
+  [[ $(echo "$original_output" | wc -l) > 0 ]]
 
-  [[ $status_status != 0 ]]
-  [[ $(echo "$control_output" | wc -l) < $(echo "$test_output" | wc -l) ]]
+  run ./autox --verbose
+  [[ $status = 0 ]]
+  [[ "$output" = "$original_output" ]]
+}
+
+@test "-vv --very-verbose  : Enables full output debugging messages" {
+  run ./autox -vv
+  [[ $status = 0 ]]
 }
 
 @test "-d --display=<name> : Sets target display" {
