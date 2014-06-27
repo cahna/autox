@@ -18,7 +18,7 @@ to configure displays automatically, if requested.
 
 Clone this repo, `cd` into its directory, run
 
-``bash
+```bash
 ./autox -h
 ```
 
