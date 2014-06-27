@@ -1,11 +1,11 @@
 
-@test "No arguments given  : Displays help and exits with error status" {
+@test "No arguments given       : Displays help and exits with error status" {
   run ./autox
   [[ $status != 0 ]]
   [[ $output =~ "Usage" ]]
 }
 
-@test "-h --help           : Displays usage" {
+@test "-h --help                : Displays usage" {
   run ./autox -h
   [[ $status = 0 ]]
   [[ $lines[0] =~ "Usage: ./autox" ]]
@@ -15,7 +15,7 @@
   [[ $lines[0] =~ "Usage: ./autox" ]]
 }
 
-@test "-v --verbose        : Enables verbose output" {
+@test "-v --verbose             : Enables verbose output" {
   run ./autox -v
   local original_output="$output"
   [[ $status = 0 ]]
@@ -26,12 +26,16 @@
   [[ "$output" = "$original_output" ]]
 }
 
-@test "-vv --very-verbose  : Enables full output debugging messages" {
+@test "-vv --very-verbose       : Enables full output debugging messages" {
   run ./autox -vv
   [[ $status = 0 ]]
 }
 
-@test "-d --display=<name> : Sets target display" {
+@test "-d --main-display=<name> : Sets main display" {
+  true
+}
+
+@test "-r --retina-relax        : Reduces MacBook display to a readable resolution" {
   true
 }
 

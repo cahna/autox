@@ -1,10 +1,25 @@
 #!/bin/bash
 
+DEPENDENCIES="jq xrandr gtf"
+
+# Bootstrap tasks and sanity checks
+##
+if [[ $UID = 0 ]]; then
+  echo "don't run $0 as root" >&2
+  exit 1
+fi
+if [[ ! -x $(which jq 2>/dev/null) ]]; then
+  echo "unable to resolve jq dependency" >&2
+  exit 1
+fi
+
 # Configuration
 ##
-readonly LIGHTNING_0="DP-1"
-readonly LIGHTNING_1="DP-2"
-readonly RETINA_DISPLAY="eDP-1"
+readonly RETINA_1="eDP-1"
+readonly LIGHTNING_1="DP-1"
+readonly LIGHTNING_2="DP-2"
+readonly HDMI_1="HDMI-1"
+readonly DISPLAYS=( "$LIGHTNING_2" "$LIGHTNING_2" "$HDMI_1" )
 
 # Globals
 ##
@@ -14,14 +29,15 @@ readonly SCRIPTDIR=$(readlink -m $(dirname $0))
 
 # assert_match() helpers
 ##
-readonly integer_type='^[0-9]+$'
-readonly xdisplay_name='[a-zA-Z]+\-[0-9]+'
+readonly INTEGER_TYPE='^[0-9]+$'
+readonly XDISPLAY_NAME='[a-zA-Z]+\-[0-9]+'
 
 # CLI-configurable variables
 ##
 USE_COLOR='yes'
 VERBOSITY='normal'
-MAIN_DISPLAY=$RETINA_DISPLAY
+MAIN_DISPLAY=$RETINA_1
+USER_SETTINGS_FILE=$HOME/.config/autox/settings.json
 
 # CLI-configurable actions
 ##
@@ -92,11 +108,11 @@ usage()
   echo "Usage: $0 [options] [action]"
   echo ""
   echo "Available options:"
-  echo "  -h --help             : Shows this usage message"
-  echo "  -a --auto             : Automatically set resolutions for given displays"
-  echo "  -d --display=<name>   : Target the given display (default: ${MAIN_DISPLAY})"
-  echo "  -v --verbose          : Enable verbose output"
-  echo "  -vv --very-verbose    : Enable full logging to stdout"
+  echo "  -h --help                 : Shows this usage message"
+  echo "  -r --retina-relax         : [MacBook Retina] Auto-configure displays & decrease resolution to a readable level"
+  echo "  -d --main-display=<name>  : Target the given display (default: ${MAIN_DISPLAY})"
+  echo "  -v --verbose              : Enable verbose output"
+  echo "  -vv --very-verbose        : Enable full logging to stdout"
 }
 
 # Fails if target argument is empty/null or if target argument does not match
@@ -136,9 +152,9 @@ get_modeline() {
   local height=$2
   local refresh=$3
 
-  local _1=$(assert_match $integer_type $width);   if [[ $? != 0 ]]; then fail "$FUNCNAME() invalid $width"; fi
-  local _2=$(assert_match $integer_type $height);  if [[ $? != 0 ]]; then fail "$FUNCNAME() invalid $height"; fi
-  local _3=$(assert_match $integer_type $refresh); if [[ $? != 0 ]]; then fail "$FUNCNAME() invalid $refresh"; fi
+  local _1=$(assert_match $INTEGER_TYPE $width);   if [[ $? != 0 ]]; then fail "$FUNCNAME() invalid $width"; fi
+  local _2=$(assert_match $INTEGER_TYPE $height);  if [[ $? != 0 ]]; then fail "$FUNCNAME() invalid $height"; fi
+  local _3=$(assert_match $INTEGER_TYPE $refresh); if [[ $? != 0 ]]; then fail "$FUNCNAME() invalid $refresh"; fi
 
   gtf $width $height $refresh | grep -oP "Modeline .*$" | sed s/^Modeline\ //
 }
@@ -146,7 +162,7 @@ get_modeline() {
 # Shows available video output devices and their connection statuses.
 ##
 list_displays() {
-  xrandr | grep -P "^${xdisplay_name} [a-zA-Z]+" | cut -d' ' -f1-2 | column -t
+  xrandr | grep -P "^${XDISPLAY_NAME} [a-zA-Z]+" | cut -d' ' -f1-2 | column -t
 }
 
 # Lists the names of connected displays
@@ -164,9 +180,9 @@ connected_displays() {
 ##
 is_connected() {
   local display=$1
-  local _1=$(assert_match $xdisplay_name $display); if [[ $? != 0 ]]; then fail "${FUNCNAME}() missing \$display"; fi
-  connected_displays | grep -P "${display}"
+  local _1=$(assert_match $XDISPLAY_NAME $display); if [[ $? != 0 ]]; then fail "${FUNCNAME}() missing \$display"; fi
   debug "CONNECTED DISPLAYS: $(connected_displays)"
+  connected_displays | grep -P "${display}"
   [[ $? != 0 ]] && fail "device not connected: $display"
   return 0
 }
@@ -192,13 +208,13 @@ set_resolution() {
     fail "failed to extract a valid mode_name from the requested modeline"
   fi
 
-  output "creating new mode..."
+  debug "creating new mode..."
   local newmode_output=$(xrandr --newmode $requested_mode 2>/dev/null)
   if [[ $? != 0 ]]; then
     fail "count not create a new modeline for ${display}@${width}x${height}"
   fi
 
-  output "adding mode: $mode_name"
+  debug "adding mode: $mode_name"
   local addmode_output=$(xrandr --addmode $display $mode_name 2>/dev/null)
   if [[ $? != 0 ]]; then 
     fail "unable to add modeline to ${display}@${width}x${height}"
@@ -207,8 +223,8 @@ set_resolution() {
   # TODO: sleep after setting new resolution. if sleep isn't killed with 
   #       Ctrl-C, then revert resolution to the previous state or to a 
   #       known safe state.
-  log "setting resolution..."
-  log "$(xrandr --output $display --mode $mode_name 2>/dev/null)"
+  debug "setting resolution..."
+  debug "$(xrandr --output $display --mode $mode_name 2>/dev/null)"
   local set_resolution_output=$(xrandr --output $display --mode $mode_name 2>/dev/null)
   if [[ $? != 0 ]]; then
     fail "unable to add modeline to ${display}@${width}x${height}"
@@ -263,12 +279,11 @@ parse_args() {
         usage
         exit 0
         ;;
-      -a | --auto)
+      -r | --retina-relax)
         DO_AUTO_CONFIGURE='yes'
         ;;
-      -d | --display)
+      -d | --main-display)
         MAIN_DISPLAY=$VALUE
-        shift
         ;;
       -v | --verbose)
         VERBOSITY='verbose'
@@ -286,6 +301,21 @@ parse_args() {
   lock_settings
 }
 
+# Place a display to the right of another
+#
+# param : $base_display string display for which $target_display will be placed
+#         to the right of.
+# param : $target_display string display to be placed to the right of 
+#         $base_display.
+##
+place_right() {
+  local base_display=$1
+  local target_display=$2
+  [[ -z $base_display ]] || [[ -z $target_display ]] && fail "must specify 2 displays in order to set arrangement"
+
+  xrandr --output $target_display --right-of $base_display
+}
+
 # Entry point
 ##
 main() {
@@ -298,21 +328,35 @@ main() {
     exit 1
   fi
 
-  debug "Starting autox..."
+  output "Starting autox..."
+  
+  if [[ $DO_AUTO_CONFIGURE = 'yes' ]]; then 
+    debug "Checking to see if requested display ($requested_display) is connected"
 
-  local display=$(is_connected "$MAIN_DISPLAY")
-  local main_connected=$?
+    local main_display=$(is_connected "$requested_display")
+    local main_connected=$?
 
-  if [[ $main_connected = 0 ]]; then
-    debug "attempting to set_resolution"
-    set_resolution $display 1920 1200
-    local success=$?
+    if [[ $main_connected = 0 ]]; then
+      output "setting MAIN_DISPLAY (${MAIN_DISPLAY}) resolution..."
+      set_resolution $main_display 1920 1200
+      local success=$?
 
-    if [[ $success = 0 ]]; then
-      debug "Finished autox."
-      exit 0
-    else
-      fail "nope..."
+      if [[ $success = 0 ]]; then
+        output "resolution set successfully!"
+      else
+        fail "setting resolution failed!"
+      fi
+
+      debug "checking for connected displays"
+      for (( i = 0 ; i < ${#DISPLAYS[@]} ; i++ )); do
+        debug "checking: ${DISPLAYS[$i]}"
+        local display_name=$(is_connected "${DISPLAYS[$i]}" 2>/dev/null)
+        local is_up=$?
+        if [[ $display_name = ${DISPLAYS[$i]} ]]; then
+          output "placing ${DISPLAYS[$i]} to the right of $MAIN_DISPLAY"
+          place_right "$MAIN_DISPLAY" "${DISPLAYS[$i]}"
+        fi
+      done 
     fi
   fi
 }
